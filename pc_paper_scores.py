@@ -18,6 +18,11 @@ from paper_affinity import (get_citation_count)
 from os import listdir
 from os.path import join
 from subprocess import Popen, PIPE
+import statistics
+
+DEF_CITATIONS_WEIGHT = 1.0
+DEF_TOPIC_SCORE_WEIGHT = 1.0
+DEF_PREFERENCE_WEIGHT = 2.0
 
 def iterate_csv(filename, encoding=""):
     if not encoding:
@@ -52,15 +57,38 @@ def get_ids_emails_and_scores(preference_report):
     report_entries = csv_to_dicts(preference_report)
     emails = {entry["email"].lower() for entry in report_entries}
     pids = {to_int(entry["paper"]) for entry in report_entries}
-    preferences = {(int(entry["paper"]), entry["email"].lower()):to_int(entry["preference"]) \
+    prefs = {(int(entry["paper"]), entry["email"].lower()):to_int(entry["preference"]) \
                     for entry in report_entries}
-    topic_scores = {(int(entry["paper"]), entry["email"].lower()):to_int(entry["topic_score"]) \
+    topics = {(int(entry["paper"]), entry["email"].lower()):to_int(entry["topic_score"]) \
                     for entry in report_entries}
-    return emails,pids,preferences,topic_scores
+    return emails,pids,prefs,topics
 
-def calculate_aggregate_score(preference, topic_score, citations):
-    # Placeholder for final score calculation, need to unify these different metrics
-    return preference + topic_score + citations
+def get_standardized_score(curr_score, mean, stdev):
+    # Bootstrap to 0 if stdev = 1
+    if stdev == 0:
+        return 0
+    return (curr_score - mean)/stdev
+
+def standardize(pids, emails, dict):
+    standardized_scores = {}
+    for email in emails:
+        scores = [dict.get((pid,email), 0) for pid in pids]
+        mean_score = statistics.mean(scores)
+        stdev_score = statistics.stdev(scores)
+        for pid in pids:
+            key = (pid,email)
+            standardized_score = get_standardized_score(dict.get(key, 0),
+                                                        mean_score,
+                                                        stdev_score)
+            standardized_scores[key] = standardized_score
+    return standardized_scores
+
+def calculate_aggregate_score(pref_weight, pref_score, topic_weight, topic_score, citation_weight, citation_score):
+    pref = pref_weight * pref_score
+    topics = topic_weight * topic_score
+    cites = citation_weight * citation_score
+    score = pref + topics + cites
+    return score
 
 def main():
     parser = argparse.ArgumentParser()
@@ -72,11 +100,23 @@ def main():
                         help="Folder containing the submissions")
     parser.add_argument("--out_scores",
                         help="Scores report")
-    args = parser.parse_args()
-    scores_csv = args.out_scores
-    emails,pids,preferences,topic_scores = get_ids_emails_and_scores(
-                                                        args.preference_report)
+    parser.add_argument("--citations_weight",
+                        default=DEF_CITATIONS_WEIGHT,
+                        help="Citation score weight in final score, def: {}".format(DEF_CITATIONS_WEIGHT))
+    parser.add_argument("--topics_weight",
+                        default=DEF_TOPIC_SCORE_WEIGHT,
+                        help="Topic score weight in final score, def: {}".format(DEF_TOPIC_SCORE_WEIGHT))
+    parser.add_argument("--preference_weight",
+                        default=DEF_PREFERENCE_WEIGHT,
+                        help="Reviewer preference weight in final score, def: {}".format(DEF_PREFERENCE_WEIGHT))
 
+    args = parser.parse_args()
+    citations_weight = float(args.citations_weight)
+    topics_weight = float(args.topics_weight)
+    pref_weight = float(args.preference_weight)
+    scores_csv = args.out_scores
+
+    emails,pids,prefs,topics = get_ids_emails_and_scores(args.preference_report)
     submissionList = get_dict_json(args.paper_json)
 
     allFiles = listdir(args.submissions)
@@ -87,17 +127,28 @@ def main():
     for ref in refCounts:
         get_citation_count(ref, citationsList)
     citations = get_citations_by_pid_email(pids, emails, citationsList)
+
+    # The standardization is performed on data local to a PC member, e.g.,
+    # preference, topic expertise, citations. This approach avoids comparisons
+    # between arbitrary preference scales of PC members and enables assigning
+    # scores to {paper, pc} tuples independent of the corresponding metrics of
+    # other PC members.
+    std_prefs = standardize(pids, emails, prefs)
+    std_topics = standardize(pids, emails, topics)
+    std_citations = standardize(pids, emails, citations)
+
     # Print csv
     schema = "paper,email,score,preference,topic_score,citations\n"
     with open(scores_csv, 'w') as f:
         f.write(schema)
         for pid in pids:
             for email in emails:
-                preference = preferences.get((pid,email),0)
-                topic_score = topic_scores.get((pid,email),0)
-                citation_score = citations.get((pid,email), 0)
-                score = calculate_aggregate_score(preference, topic_score, citation_score)
-                s = "%d,%s,%d,%d,%d,%d\n" % (pid, email, score, preference, topic_score, citation_score)
+                key = (pid,email)
+                score = calculate_aggregate_score(pref_weight, std_prefs.get(key, 0),
+                                                  topics_weight, std_topics.get(key, 0),
+                                                  citations_weight, std_citations.get(key, 0))
+                s = "%d,%s,%.2f,%d,%d,%d\n" % (pid, email, score, prefs.get(key, 0),
+                                               topics.get(key, 0), citations.get(key, 0))
                 f.write(s)
     print("Done calculating scores for all {paper,pc} tuple")
 

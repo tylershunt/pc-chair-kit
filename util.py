@@ -48,8 +48,8 @@ def init_or_add_to_dic(dic, k, v):
 
 def get_dict_json(json_file):
     with open(json_file, 'r', encoding='utf-8') as f:
-        s = unidecode.unidecode(f.read())
-        d = json.loads(s)
+        #s = unidecode.unidecode(f.read())
+        d = json.load(f, encoding='utf-8')
 
     return d
 

@@ -275,6 +275,7 @@ class PCMember(Person):
 
     def add_publication(self, pub):
         self.publications.append(pub)
+        print(pub)
         pub_as = pub.get_authors()
         self.conflicts.merge_collab_conflicts(pub_as)
 

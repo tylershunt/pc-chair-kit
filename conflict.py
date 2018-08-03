@@ -36,9 +36,9 @@ def parse_line(line):
 
     if re.match("\s*[,;:\-\(]", line, re.IGNORECASE):
         # This is a name, make sure there is no warning:
-        for i in institution_indication:
-            if i.lower() in names.lower():
-                raise ValueError("Conflict looks like university: %s, line: %s" % (name, original_line))
+        #for i in institution_indication:
+        #    if i.lower() in names.lower():
+        #        raise ValueError("Conflict looks like university: %s, line: %s" % (name, original_line))
         return names.strip(), None
     else:
         return None, names.strip()

@@ -13,6 +13,8 @@ import argparse
 import pickle
 
 
+cache = None
+
 def sanitize_text(text):
     text = unidecode.unidecode(html.unescape(text.decode('ascii')))
     return text.replace("&", " ")
@@ -48,7 +50,8 @@ class Cache(object):
                 print("Problem loading paper cache, with exception",
                       ex.__class__.__name__,
                       "if this persists, re-create %s" % path)
-                raise ex
+                print(ex)
+                return cls("TMP_CACHE")
 
         else:
             print("Cache not found, creating")
@@ -68,13 +71,18 @@ class Cache(object):
             return None
 
 
-cache = Cache.load('data/.cache_queries')
+def load_cache():
+    global cache
+    if not cache:
+        cache = Cache.load('data/.cache_queries')
 
 def save_cache():
+    global cache
     cache.backup_and_save(True)
 
 
 def request_dblp(query):
+    load_cache()
     url = ('http://dblp.uni-trier.de/%s' % query)
 
     num_retries = 2
@@ -109,8 +117,12 @@ def request_dblp(query):
 
 
 def request_author_key(author):
-    data = request_dblp('search/author?xauthor="%s"' %
-                        author.replace(' ', '+'))
+    try:
+        data = request_dblp('search/author?xauthor="%s"' %
+                            author.replace(' ', '+'))
+    except xml.parsers.expat.ExpatError:
+        data = {}
+
     # TODO DOES NOT WORK IF THE PERSON HAS ALIASES
     if not data['authors']:
         return ['']
@@ -125,8 +137,11 @@ def make_author_link(key):
 
 
 def request_publication_keys(author_key):
-    data = request_dblp('rec/pers/%s/xk' %
-                        author_key)
+    try:
+        data = request_dblp('rec/pers/%s/xk' %
+                            author_key)
+    except:
+        return []
     return data['dblpperson']['dblpkey'][1:]
 
 
@@ -173,8 +188,11 @@ def read_pub(pub_xml):
 
 #http://dblp.uni-trier.de/rec/rdf/conf/isca/KannanGGS17.rdf
 def request_publication(key):
-    xmldict = request_dblp('rec/bibtex/%s.xml' % key)
-    rdfdict = request_dblp('rec/rdf/%s.rdf' % key)
+    try:
+        xmldict = request_dblp('rec/bibtex/%s.xml' % key)
+        rdfdict = request_dblp('rec/rdf/%s.rdf' % key)
+    except:
+        return None, None
     return xmldict, rdfdict
 
 def request_publications(author_key):
@@ -208,7 +226,7 @@ def filter_publications(publications, year):
 def get_author_keys(author_list):
     authors = read_csv(author_list, ["first_name", "last_name"])
 
-    for author in tqdm(authors.items()):
+    for author in tqdm(authors):
         keys = request_author_key(author["first_name"] + "+" +
                                   author["last_name"])
         author["keys"] = keys
@@ -218,8 +236,8 @@ def get_author_keys(author_list):
 
 def build_author_key_csv(author_key_list, authors):
     csv = []
-    for k, author in authors.items():
-        row = [k, author['first_name'], author['last_name']]
+    for author in authors:
+        row = [author['id'], author['first_name'], author['last_name']]
         for key in author['keys']:
             csv += [row + [key, 'x', make_author_link(key)]]
 
@@ -228,7 +246,7 @@ def build_author_key_csv(author_key_list, authors):
 
 
 def build_paper_csv(pub_list, authors, whitelist):
-    schema = ['id', 'first_name', 'last_name', 'keys',
+    schema = ['first_name', 'last_name', 'keys',
               'valid', 'pub_key', 'pub_title', 'put_year', 'pub_authors']
     csv = []
     for k, author in authors.items():
@@ -306,22 +324,9 @@ def main():
                         help="Author paper list")
     parser.add_argument("--co-author-list", help="Co author list")
     parser.add_argument("--co-author-year", type=int,
-                        default=2012,
+                        default=2013,
                         help="Last acceptable year for"
                         "collaboration without conflict")
-
-    # These optaions are not implemented yet
-    parser.add_argument("--pc-conflicts",
-                        help="File with conflicts listed by pc member")
-    parser.add_argument("--pc-conflicts-new-csv",
-                        help="New conflicts found in DBLP. CSV to be"
-                        " fed to hotcrp")
-    parser.add_argument("--pc-conflicts-new-report",
-                        help="New conflicts found in DBLP. File with report to"
-                        " be sent to PC members")
-    parser.add_argument("--hot-crp-papers",
-                        help="JSON with hotcrp papers, will be used to"
-                        " generate the conflict list")
 
     args = parser.parse_args()
 
@@ -354,5 +359,6 @@ def main():
             print(v)
 
 if __name__ == '__main__':
+    load_cache()
     main()
     save_cache()

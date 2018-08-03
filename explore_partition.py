@@ -10,41 +10,45 @@ from tqdm import tqdm
 from warnings import warn
 from math import ceil, factorial as fac
 
-def csv_to_dicts(fileobj, schema=None):
+def csv_to_dicts(fileobj, schema=None, sanitize=lambda x:x):
     result = []
     reader = csv.DictReader(fileobj, schema)
-    return [d for d in csv.DictReader(fileobj, schema)]
+    return [sanitize(d) for d in csv.DictReader(fileobj, schema)]
 
-def to_float(string):
-    if string:
-        return float(string)
-    return float(0)
+def sanitize_score_input(d):
+    d["email"] = d.get("email").lower()
+    d["paper"] = int(d.get("paper"))
+    d["score"] = float(d.get("score"))
+    d["preference"] = float(d.get("preference"))
+    d["topic_score"] = float(d.get("topic_score"))
+    d["citations"] = float(d.get("topic_score"))
+    return d
 
 def build_affinities_dict(affinity_report, emails):
-    def _(string):
-        return string.lower()
-    scores = csv_to_dicts(affinity_report)
-    pc_members = {_(e["email"])   for e in scores if _(e["email"]) in emails}
-    papers     = {int(e["paper"]) for e in scores}
-    affinities = {(int(e["paper"]), _(e["email"])):to_float(e["score"]) \
-                    for e in scores}
+    scores = csv_to_dicts(affinity_report, sanitize=sanitize_score_input)
+    for e in emails:
+        pc_members = {e["email"] for e in scores if e["email"] in emails}
+        papers     = {e["paper"] for e in scores}
+        affinities = {(e["paper"], e["email"]):e["score"] for e in scores}
+
     return pc_members,papers,affinities
 
 def iter_partitions(pc, seed):
     print("there are", len(pc), "in the pc")
     pc = {a for a in pc if a not in seed[0] and a not in seed[1]}
-    i = 0
+    print("there are", len(pc), "assignable members")
     n = int(ceil(len(pc) / 2))
-    stop_after = (fac(n * 2)) // ((fac(n)**2) * 2)
+    remaining = (fac(n * 2)) // ((fac(n)**2) * 2)
 
-    print("trying", stop_after, "possible partitions")
+    print("trying", remaining, "possible partitions")
 
     combos = itertools.combinations(pc, n)
     for combo in combos:
-        if i == stop_after:
+        if remaining <= 0:
             break
-        i += 1
-        yield list(combo) + seed[0], list(pc - set(combo)) + seed[1]
+        remaining -= 1
+        yield remaining, (list(combo) + seed[0], list(pc - set(combo)) +
+                          seed[1])
 
 def score_group(g, paper, affinities):
     result = 0
@@ -81,18 +85,20 @@ def build_assignment(affinity_report, pc_names, seed_partition):
                                                          valid_emails)
 
     partitions = iter_partitions(valid_emails, seed_part)
-    best_part = next(partitions)
+    remaining, best_part = next(partitions)
     best_score = score_partition(best_part, papers, affinities)
 
     i = 0
     start = time.time()
     try:
-        for part in partitions:
-            i += 1
-            score = score_partition(part, papers, affinities)
-            if score > best_score:
-                best_score = score
-                best_part = part
+        with tqdm(total=remaining) as pbar:
+            for _,part in partitions:
+                pbar.update(1)
+                i += 1
+                score = score_partition(part, papers, affinities)
+                if score > best_score:
+                    best_score = score
+                    best_part = part
     except KeyboardInterrupt:
         print("interrupted!!!! After", i, "ierations")
     end = time.time()

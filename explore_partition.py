@@ -10,34 +10,24 @@ from tqdm import tqdm
 from warnings import warn
 from math import ceil, factorial as fac
 
-def iterate_csv(fileobj, encoding=""):
-    csv_it = csv.reader(fileobj)
-    for r in csv_it:
-        yield [unidecode.unidecode(i) for i in r]
-
 def csv_to_dicts(fileobj, schema=None):
     result = []
-    row_gen = iterate_csv(fileobj, schema)
-    first_row = next(row_gen, None)
-    if not schema:
-        schema = first_row
-    else:
-        if schema != first_row:
-            warn("csv schema does not match header in file")
-    return [{k:v for k, v in zip(schema, row)} for row in row_gen]
+    reader = csv.DictReader(fileobj, schema)
+    return [d for d in csv.DictReader(fileobj, schema)]
 
-def to_int(string):
+def to_float(string):
     if string:
-        return int(string)
-    return 0
+        return float(string)
+    return float(0)
 
-def build_affinities_dict(affinity_report, valid_emails):
-    affinity_entries = csv_to_dicts(affinity_report)
-    pc_members = {entry["email"].lower() for entry in affinity_entries \
-                  if entry["email"].lower() in valid_emails}
-    papers = {int(entry["paper"]) for entry in affinity_entries}
-    affinities = {(int(entry["paper"]), entry["email"].lower()):to_int(entry["topic_score"]) \
-                    for entry in affinity_entries}
+def build_affinities_dict(affinity_report, emails):
+    def _(string):
+        return string.lower()
+    scores = csv_to_dicts(affinity_report)
+    pc_members = {_(e["email"])   for e in scores if _(e["email"]) in emails}
+    papers     = {int(e["paper"]) for e in scores}
+    affinities = {(int(e["paper"]), _(e["email"])):to_float(e["score"]) \
+                    for e in scores}
     return pc_members,papers,affinities
 
 def iter_partitions(pc, seed):
@@ -94,12 +84,17 @@ def build_assignment(affinity_report, pc_names, seed_partition):
     best_part = next(partitions)
     best_score = score_partition(best_part, papers, affinities)
 
+    i = 0
     start = time.time()
-    for part in partitions:
-        score = score_partition(part, papers, affinities)
-        if score > best_score:
-            best_score = score
-            best_part = part
+    try:
+        for part in partitions:
+            i += 1
+            score = score_partition(part, papers, affinities)
+            if score > best_score:
+                best_score = score
+                best_part = part
+    except KeyboardInterrupt:
+        print("interrupted!!!! After", i, "ierations")
     end = time.time()
 
     print("took", end - start, "seconds")

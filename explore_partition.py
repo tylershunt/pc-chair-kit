@@ -12,6 +12,9 @@ from tqdm import tqdm
 from warnings import warn
 from math import ceil, factorial as fac
 
+def eprint(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
+
 def to_int(x):
     if x:
         return int(x)
@@ -37,7 +40,7 @@ def sanitize_score_input(d):
 
 def sanitize_seed_input(d):
     d["email"] = d.get("email").lower()
-    d["part"] = d.get("part").lower()
+    d["split"] = d.get("split").lower()
     return d
 
 def build_affinities_dict(affinity_report, valid_members):
@@ -55,17 +58,18 @@ def iter_partitions(pc, seed, n):
         yield Partition(Group(combo), Group(pc - set(combo)), seed, top_n=n)
 
 def filter_out_seed(pc, seed):
-    print("there are", len(pc), "in the pc")
+    eprint("there are", len(pc), "in the pc")
     pc = {a for a in pc if a not in seed}
-    print("there are", len(pc), "assignable members")
+    eprint("there are", len(pc), "assignable members")
     k = int(ceil(len(pc) / 2))
     remaining = (fac(k * 2)) // ((fac(k)**2))
-    print("trying", remaining, "possible partitions")
+    eprint("trying", remaining, "possible partitions")
     return remaining, pc
 
 class Group:
     def __init__(self, members):
         self.members = list(members)
+        self.members.sort()
 
     def __contains__(self, key):
         if key in self.members:
@@ -136,6 +140,9 @@ class Partition:
     def __contains__(self, key):
         return key in self.groupA or key in self.groupB
 
+    def __iter__(self):
+        return itertools.chain(self.groupA, self.groupB)
+
     def __str__(self):
         return "=====Group A======\n" + str(self.groupA) + \
                "\n=====Group B======\n" + str(self.groupB)
@@ -157,8 +164,8 @@ class Partition:
 def build_seed_part(fileobj, save_papers=False, top_n=None):
     if fileobj:
         d = csv_to_dicts(fileobj, sanitize=sanitize_seed_input)
-        groupA = MemoizedGroup(e["email"] for e in d if e["part"] == 'a')
-        groupB = MemoizedGroup(e["email"] for e in d if e["part"] == 'b')
+        groupA = MemoizedGroup(e["email"] for e in d if e["split"] == 'a')
+        groupB = MemoizedGroup(e["email"] for e in d if e["split"] == 'b')
     else:
         groupA = MemoizedGroup([])
         groupB = MemoizedGroup([])
@@ -186,6 +193,7 @@ def cli(ctx, pc_names, affinity_report):
     ctx.obj["pc_members"] = pc_members
     ctx.obj["papers"] = papers
     ctx.obj["affinities"] = affinities
+    ctx.obj["pc_info"] = valid_emails
 
 #pid,pc-email,affinity-score
 @click.command()
@@ -231,12 +239,22 @@ def search(ctx, seed_partition, n, full_report, j):
                 if full_report:
                     writer.writerow((score, part))
     except KeyboardInterrupt:
-        print("interrupted!!!! After", i, "ierations")
+        eprint("interrupted!!!! After", i, "ierations")
 
     end = time.time()
 
-    print("took", end - start, "seconds")
-    print("best score is:", best_score, "produced by this split:\n", best_part)
+    eprint("took", end - start, "seconds")
+    eprint("best score is:", best_score, "produced by this split:\n", best_part)
+
+    email_to_name = {p["email"].lower():p for p in ctx.obj["pc_info"]}
+    for p in best_part.groupA:
+        email_to_name[p]["split"] = 'a'
+    for p in best_part.groupB:
+        email_to_name[p]["split"] = 'b'
+    writer = csv.DictWriter(sys.stdout, ["first","last","email","affiliation","split"])
+    writer.writeheader()
+    for p in best_part:
+        writer.writerow(email_to_name[p.lower()])
 
 @click.command()
 @click.option("-n", type=int,

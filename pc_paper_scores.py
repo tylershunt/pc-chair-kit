@@ -61,7 +61,10 @@ def get_ids_emails_and_scores(preference_report):
                     for entry in report_entries}
     topics = {(int(entry["paper"]), entry["email"].lower()):to_int(entry["topic_score"]) \
                     for entry in report_entries}
-    return emails,pids,prefs,topics
+    conflicts = {(int(entry["paper"]), entry["email"].lower()) \
+                    for entry in report_entries if entry["conflict"]}
+    print("found", len(conflicts), "conflicts")
+    return emails,pids,prefs,topics,conflicts
 
 def get_standardized_score(curr_score, mean, stdev):
     # Bootstrap to 0 if stdev = 1
@@ -116,7 +119,7 @@ def main():
     pref_weight = float(args.preference_weight)
     scores_csv = args.out_scores
 
-    emails,pids,prefs,topics = get_ids_emails_and_scores(args.preference_report)
+    emails,pids,prefs,topics,conflicts = get_ids_emails_and_scores(args.preference_report)
     submissionList = get_dict_json(args.paper_json)
 
     allFiles = listdir(args.submissions)
@@ -147,8 +150,11 @@ def main():
                 score = calculate_aggregate_score(pref_weight, std_prefs.get(key, 0),
                                                   topics_weight, std_topics.get(key, 0),
                                                   citations_weight, std_citations.get(key, 0))
-                s = "%d,%s,%.2f,%d,%d,%d\n" % (pid, email, score, prefs.get(key, 0),
-                                               topics.get(key, 0), citations.get(key, 0))
+                if key in conflicts:
+                    s = "%d,%s,%.2f,%d,%d,%d\n" % (pid, email, 0, 0, 0, 0)
+                else:
+                    s = "%d,%s,%.2f,%d,%d,%d\n" % (pid, email, score, prefs.get(key, 0),
+                                                   topics.get(key, 0), citations.get(key, 0))
                 f.write(s)
     print("Done calculating scores for all {paper,pc} tuple")
 

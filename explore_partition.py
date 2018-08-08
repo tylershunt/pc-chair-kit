@@ -78,14 +78,15 @@ class Group:
     def __iter__(self):
         return iter(self.members)
 
-    def iter_scores(self, paper, affs):
-        return (affs.get((paper,mem), 0) for mem in self)
+    def iter_scores(self, paper, affs, pred=lambda x: True):
+        return (affs.get((paper,mem), 0) for mem in self \
+                if pred(affs.get((paper,mem), 0)))
 
     def top_n_scores(self, paper, affs, n):
         return heapq.nlargest(n, self.iter_scores(paper, affs))
 
-    def score(self, paper, affs):
-        return sum(self.iter_scores(paper, affs))
+    def score(self, paper, affs, pred=lambda x:True):
+        return sum(self.iter_scores(paper, affs, pred))
 
 class MemoizedGroup(Group):
     def __init__(self, members, top_n=None):
@@ -99,9 +100,10 @@ class MemoizedGroup(Group):
                     super(MemoizedGroup,self).top_n_scores(paper, affs, n)
         return self.top_n_scores_store[(paper,n)]
 
-    def score(self, paper, affs):
+    def score(self, paper, affs, pred=lambda x:True):
         if not paper in self.scores:
-            self.scores[paper] = super(MemoizedGroup,self).score(paper, affs)
+            self.scores[paper] = super(MemoizedGroup,self).score(paper, affs,
+                                                                 pred)
         return self.scores[paper]
 
 class MultiGroup:
@@ -119,12 +121,12 @@ class MultiGroup:
     def __str__(self):
         return str(list(self))
 
-    def score(self, paper, affs):
+    def score(self, paper, affs, pred=lambda x:True):
         if self.top_n:
             it = (g.top_n_scores(paper, affs, self.top_n) for g in self.groups)
             it = heapq.nlargest(self.top_n, itertools.chain(*it))
         else:
-            it = (g.score(paper, affs) for g in self.groups)
+            it = (g.score(paper, affs, pred) for g in self.groups)
         return sum(it)
 
 class Partition:
@@ -146,13 +148,13 @@ class Partition:
     def __str__(self):
         return "=====Group A======\n" + str(self.groupA) + \
                "\n=====Group B======\n" + str(self.groupB)
-    def score(self, papers, affs):
+    def score(self, papers, affs, pred=lambda x:True):
         # get the score for each paper in each partition, add the max
         result = 0
 
         for p in papers:
-            sA = self.groupA.score(p, affs)
-            sB = self.groupB.score(p, affs)
+            sA = self.groupA.score(p, affs, pred)
+            sB = self.groupB.score(p, affs, pred)
             if self.save_papers:
                 if sA > sB:
                     self.groupB.assign(p)
@@ -172,14 +174,21 @@ def build_seed_part(fileobj, save_papers=False, top_n=None):
 
     return Partition(groupA, groupB, None, top_n=top_n, save_papers=save_papers)
 
+def true_pred(x):
+    return True
+
+def pos_pred(x):
+    return x > 0
+
 # need this instead of closure for multiprocess
 class PartitionProcessor:
-    def __init__(self, papers, affinities):
+    def __init__(self, papers, affinities, pred=True):
         self.papers = papers
         self.affinities = affinities
+        self.pred = pred
     def __call__(self, part):
         try:
-            return part.score(self.papers, self.affinities), part
+            return part.score(self.papers, self.affinities, self.pred), part
         except KeyboardInterrupt:
             return None
 
@@ -203,15 +212,20 @@ def cli(ctx, pc_names, affinity_report):
               help="if given only consider the best n reviewers")
 @click.option("--full-report", type=click.File('w'),
               help="dump every partition and score into this file")
+@click.option("--positive-only/--no-positive-only", default=False,
+              help="only consider positive scores")
 @click.option("-j", type=int, help="number of worker processes")
 @click.pass_context
-def search(ctx, seed_partition, n, full_report, j):
+def search(ctx, seed_partition, n, full_report, j, positive_only):
     seed_part = build_seed_part(seed_partition)
     pc_members = ctx.obj["pc_members"]
     papers = ctx.obj["papers"]
     affinities = ctx.obj["affinities"]
+    score_pred = true_pred
+    if positive_only:
+        score_pred = pos_pred
 
-    seed_part.score(papers, affinities)
+    seed_part.score(papers, affinities, score_pred)
 
     remaining, filtered_emails = filter_out_seed(pc_members, seed_part)
     partitions = iter_partitions(filtered_emails, seed_part, n)
@@ -227,7 +241,7 @@ def search(ctx, seed_partition, n, full_report, j):
     start = time.time()
     pool = Pool(j)
 
-    process_partition = PartitionProcessor(papers, affinities)
+    process_partition = PartitionProcessor(papers, affinities, score_pred)
     process_it = pool.imap_unordered(process_partition, partitions, 1000)
     try:
         with tqdm(total=remaining) as pbar:
@@ -259,14 +273,20 @@ def search(ctx, seed_partition, n, full_report, j):
 @click.command()
 @click.option("-n", type=int,
               help="if given only consider the best n reviewers")
+@click.option("--positive-only/--no-positive-only", default=False,
+              help="only consider positive scores")
 @click.argument("part_csv", type=click.File('r'))
 @click.pass_context
-def examine(ctx, part_csv, n):
+def examine(ctx, part_csv, n, positive_only):
     papers = ctx.obj["papers"]
     affinities = ctx.obj["affinities"]
     part = build_seed_part(part_csv, True, top_n=n)
 
-    score = part.score(papers, affinities)
+    score_pred = true_pred
+    if positive_only:
+        score_pred = pos_pred
+
+    score = part.score(papers, affinities, score_pred)
 
     print("Partition:\n", part)
     print("SCORE is", score)
@@ -277,23 +297,59 @@ def examine(ctx, part_csv, n):
 @click.command()
 @click.option("-n", type=int,
               help="if given only consider the best n reviewers")
+@click.option("--positive-only/--no-positive-only", default=False,
+              help="only consider positive scores")
 @click.pass_context
-def total(ctx, n):
+def total(ctx, n, positive_only):
     papers = ctx.obj["papers"]
     affinities = ctx.obj["affinities"]
     pc_members = ctx.obj["pc_members"]
+
+    score_pred = true_pred
+    if positive_only:
+        score_pred = pos_pred
+
     group = Group(pc_members)
 
     if not n:
-        score = sum(group.score(p, affinities) for p in papers)
+        score = sum(group.score(p, affinities, score_pred) for p in papers)
     else:
         score = sum(sum(group.top_n_scores(p, affinities, n)) for p in papers)
 
     print(len(pc_members), "reviewers, and", len(papers), "papers")
     print("Total affinity is", score)
 
+@click.command()
+@click.option("-n", type=int,
+              help="if given only consider the best n reviewers")
+@click.option("--positive-only/--no-positive-only", default=False,
+              help="only consider positive scores")
+@click.argument("part_csv", type=click.File('r'))
+@click.pass_context
+def papers(ctx, part_csv, n, positive_only):
+    papers = ctx.obj["papers"]
+    affinities = ctx.obj["affinities"]
+    pc_members = ctx.obj["pc_members"]
+    part = build_seed_part(part_csv, True, top_n=n)
+    full_pc = Group(pc_members)
+
+    score_pred = true_pred
+    if positive_only:
+        score_pred = pos_pred
+
+    writer = csv.writer(sys.stdout)
+    writer.writerow(["paper","penalty"])
+    for p in papers:
+        part_score = part.score([p], affinities, score_pred)
+        if n:
+            total_score = sum(full_pc.top_n_scores(p, affinities, n))
+        else:
+            total_score = full_pc.score(p, affinities, score_pred)
+        writer.writerow([p, total_score - part_score])
+
 cli.add_command(search)
 cli.add_command(examine)
 cli.add_command(total)
+cli.add_command(papers)
 if __name__ == '__main__':
     cli(obj={})

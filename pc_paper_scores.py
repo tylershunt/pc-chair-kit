@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
     This script is used to calculate an affinity score between an reviewer and
     a paper. This script is based off of paper_affinity.py.
@@ -6,12 +7,13 @@
         2) Topic score based on paper topics and reviewer expertise
         3) Number of citations a paper makes to the reviewer
 """
-#!/usr/bin/env python3
 
 import argparse
 import csv
 import unidecode
 import re
+import sys
+import math
 from util import (get_dict_json)
 from explore_partition import (to_int)
 from paper_affinity import (get_citation_count)
@@ -69,7 +71,8 @@ def get_ids_emails_and_scores(preference_report):
 def get_standardized_score(curr_score, mean, stdev):
     # Bootstrap to 0 if stdev = 1
     if stdev == 0:
-        return 0
+        return curr_score
+    # standard deviation for positives and standard deviation for negatives
     return (curr_score - mean)/stdev
 
 def standardize(pids, emails, dict):
@@ -85,6 +88,78 @@ def standardize(pids, emails, dict):
                                                         stdev_score)
             standardized_scores[key] = standardized_score
     return standardized_scores
+
+def mean_stddev(scores):
+    scores = list(scores)
+    if len(scores) < 2:
+        return None, None
+    else:
+        return statistics.mean(scores), statistics.stdev(scores)
+
+def normalize(scores, func=max):
+    if len(scores) == 0:
+        return {}
+    max_score = abs(func(scores.values()))
+    if max_score == 0:
+        return dict(scores)
+    return {p:(s/max_score) for p,s in scores.items()}
+
+#def standardize_bids(pids, emails, bids):
+#    standardized_scores = {}
+#    for email in emails:
+#        scores = [bids.get((pid,email), 0) for pid in pids]
+#        mean_pos,stddev_pos = mean_stddev(s for s in scores if s > 0)
+#        mean_neg,stddev_neg = mean_stddev(s for s in scores if s < 0)
+#
+#        reviewer_std_pos_scores = dict()
+#        reviewer_std_neg_scores = dict()
+#        for pid in pids:
+#            old_score = bids.get((pid,email),0)
+#            # we want separate stdevs for positives and negatives since
+#            # reviewers often treat these differently
+#            if old_score > 0:
+#                if stddev_pos != None:
+#                    reviewer_std_pos_scores[pid] = get_standardized_score(old_score,
+#                                                                      mean_pos,
+#                                                                      stddev_pos)
+#                else:
+#                    reviewer_std_pos_scores[pid] = old_score
+#
+#            elif old_score < 0:
+#                if stddev_neg != None:
+#                    reviewer_std_neg_scores[pid] = get_standardized_score(old_score,
+#                                                                      mean_neg,
+#                                                                      stddev_neg)
+#                else:
+#                    reviewer_std_neg_scores[pid] = old_score
+#
+#        reviewer_std_scores = normalize(reviewer_std_pos_scores, max)
+#        reviewer_std_scores.update(normalize(reviewer_std_neg_scores, min))
+#        standardized_scores.update({(pid,email):score for pid,score in \
+#                                    reviewer_std_scores.items()})
+#    return standardized_scores
+
+def standardize_take_max(scores):
+    positive = {k:v for k,v in scores.items() if v >= 0}
+    negative = {k:v for k,v in scores.items() if v < 0}
+    ret = normalize(positive, max)
+    ret.update(normalize(negative, min))
+    return ret
+
+def standardize_topics(pids, emails, topics):
+    #Not doing stddev so we don't have to worry about zeros, lump them in with
+    #posities
+    return standardize_take_max(topics)
+
+def standardize_bids(pids, emails, bids):
+    standardized_scores = {}
+    for email in emails:
+        all_bids = {(pid,email):bids.get((pid,email),0) for pid in pids}
+        standardized_scores.update(standardize_take_max(all_bids))
+    return standardized_scores
+
+def standardize_cites(pids, emails, cites):
+    return normalize(cites, max)
 
 def calculate_aggregate_score(pref_weight, pref_score, topic_weight, topic_score, citation_weight, citation_score):
     pref = pref_weight * pref_score
@@ -136,12 +211,26 @@ def main():
     # between arbitrary preference scales of PC members and enables assigning
     # scores to {paper, pc} tuples independent of the corresponding metrics of
     # other PC members.
-    std_prefs = standardize(pids, emails, prefs)
-    std_topics = standardize(pids, emails, topics)
-    std_citations = standardize(pids, emails, citations)
+    std_prefs = standardize_bids(pids, emails, prefs)
+    std_topics = standardize_topics(pids, emails, topics)
+    std_citations = standardize_cites(pids, emails, citations)
+
+    # sanity checks
+    for k,v in std_prefs.items():
+        if v > 1 or v < -1:
+            print("bad normalization:", k, v)
+
+    for k,v in std_topics.items():
+        if v > 1 or v < -1:
+            print("bad normalization:", k, v)
+
+    for k,v in std_citations.items():
+        if v > 1 or v < -1:
+            print("bad normalization:", k, v)
 
     # Print csv
-    schema = "paper,email,score,preference,topic_score,citations\n"
+    schema = "paper,email,score,preference,topic_score,citations,conflict\n"
+
     with open(scores_csv, 'w') as f:
         f.write(schema)
         for pid in pids:
@@ -151,12 +240,17 @@ def main():
                                                   topics_weight, std_topics.get(key, 0),
                                                   citations_weight, std_citations.get(key, 0))
                 if key in conflicts:
-                    s = "%d,%s,%.2f,%d,%d,%d\n" % (pid, email, 0, 0, 0, 0)
+                    s = "%d,%s,%.2f,%d,%d,%d,%s\n" % (pid, email, 0, 0, 0, 0,
+                                                   'conflict')
                 else:
-                    s = "%d,%s,%.2f,%d,%d,%d\n" % (pid, email, score, prefs.get(key, 0),
-                                                   topics.get(key, 0), citations.get(key, 0))
+                    s = "%d,%s,%.4f,%.4f,%.4f,%.4f,%s\n" % (pid, email, score,
+                                                      std_prefs.get(key, 0),
+                                                      std_topics.get(key, 0),
+                                                      std_citations.get(key, 0),'')
                 f.write(s)
     print("Done calculating scores for all {paper,pc} tuple")
+
+    # check out suspicious zeros
 
 if __name__ == '__main__':
     main()
